@@ -1,0 +1,56 @@
+set(incs )
+set(srcs )
+set(assets )
+list(APPEND srcs
+        vb6824.c
+        )
+
+list(APPEND incs
+        .
+        )
+
+        
+if(CONFIG_VB6824_OTA_SUPPORT)
+list(APPEND assets assets/update.html)
+list(APPEND srcs https.c)
+endif()
+
+# Base requirements for audio-only use (OTA disabled).
+# IDF 6.0 split the monolithic "driver" into esp_driver_* components.
+set(vb_reqs driver esp_driver_gpio esp_driver_uart esp_ringbuf esp_timer)
+# OTA support pulls in networking + json; only add when explicitly enabled.
+if(CONFIG_VB6824_OTA_SUPPORT)
+    list(APPEND vb_reqs esp_wifi esp_http_client esp_http_server json)
+endif()
+
+idf_component_register(SRCS "${srcs}"
+                            INCLUDE_DIRS "${incs}"
+                            EMBED_TXTFILES "${assets}"
+                            REQUIRES ${vb_reqs})
+
+
+
+if(CONFIG_IDF_TARGET_ESP32)
+    set(lib_target "esp32")
+elseif(CONFIG_IDF_TARGET_ESP32S2)
+    set(lib_target "esp32s2")
+elseif(CONFIG_IDF_TARGET_ESP32S3)
+    set(lib_target "esp32s3")
+elseif(CONFIG_IDF_TARGET_ESP32C2)
+    set(lib_target "esp32c2")
+elseif(CONFIG_IDF_TARGET_ESP32C3)
+    set(lib_target "esp32c3")
+elseif(CONFIG_IDF_TARGET_ESP32C5)
+    set(lib_target "esp32c5")
+endif()
+
+
+if("${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}" VERSION_GREATER_EQUAL "5.5")
+    set(lib_version "idf5.5")
+else()
+    set(lib_version "idf5.4")
+endif()
+
+add_prebuilt_library(vbota "libs/${lib_version}/lib${lib_target}.a")
+
+target_link_libraries(${COMPONENT_LIB} PRIVATE vbota)

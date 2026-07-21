@@ -1,0 +1,83 @@
+# voice_list.tsv -- id<TAB>text;順序即 voice_id 枚舉順序(產品 §6.2)。
+# 前提:V_N0..V_N20 連續、V_N30..V_N90 連續(§10 / §19.1)。V_BEEP 由打包器合成。
+# ---- 流程(齊播/本機)----
+V_CONFIRM_DEALER	Please confirm the dealer
+V_SEAT_PROMPT	Player on the dealer's left, press your button
+V_NEXT_SEAT	Next player, press your button
+V_SET_CHIPS	Please set your chips
+V_GAME_START	Game starting
+V_DEAL	Dealing hole cards
+V_PREFLOP	Pre-flop betting
+V_FLOP	Flop
+V_TURN	Turn
+V_RIVER	River
+V_SHOWDOWN	Showdown
+V_YOUR_TURN	Your turn
+V_NEW_DEALER	New dealer
+V_HAND_ABORT	Hand cancelled, bets returned
+# ---- 動作回饋(本機)----
+V_CHECK	Check
+V_CALL	Call
+V_BET	Bet
+V_RAISE	Raise
+V_FOLD	Fold
+V_ALLIN	All in
+# ---- 結果:牌型(V_RANK_0..9 連續)----
+V_RANK_0	High card
+V_RANK_1	One pair
+V_RANK_2	Two pair
+V_RANK_3	Three of a kind
+V_RANK_4	Straight
+V_RANK_5	Flush
+V_RANK_6	Full house
+V_RANK_7	Four of a kind
+V_RANK_8	Straight flush
+V_RANK_9	Royal flush
+V_I_WON	I won
+V_SPLIT	Split pot
+# ---- 籌碼播報 ----
+V_YOU_HAVE	You have
+V_CHIPS	chips
+# ---- 數字 0..20(連續)----
+V_N0	zero
+V_N1	one
+V_N2	two
+V_N3	three
+V_N4	four
+V_N5	five
+V_N6	six
+V_N7	seven
+V_N8	eight
+V_N9	nine
+V_N10	ten
+V_N11	eleven
+V_N12	twelve
+V_N13	thirteen
+V_N14	fourteen
+V_N15	fifteen
+V_N16	sixteen
+V_N17	seventeen
+V_N18	eighteen
+V_N19	nineteen
+V_N20	twenty
+# ---- 十位 30..90(連續)----
+V_N30	thirty
+V_N40	forty
+V_N50	fifty
+V_N60	sixty
+V_N70	seventy
+V_N80	eighty
+V_N90	ninety
+V_HUNDRED	hundred
+V_THOUSAND	thousand
+# ---- 系統 ----
+V_PLAYER_JOINED	A player joined
+V_PLAYER_LEFT	A player left
+V_PAUSED	Game paused
+V_RESUMED	Game resumed
+V_LOW_BATT	Low battery
+V_CONN_LOST	Connection lost
+V_NOT_ENOUGH	Not enough players
+V_WAIT_APPROVE	Waiting for dealer approval
+V_ELIMINATED	You are out
+V_BEEP	beep

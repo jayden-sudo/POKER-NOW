@@ -1,0 +1,37 @@
+# ==== ESP-IDF 建置產物 ====
+# 每個裝置 idf.py build 產生的目錄,完全可重建,勿提交
+build/
+# idf.py set-target / menuconfig 產生的本機組態(sdkconfig.defaults 才是版本控管的來源)
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+# component manager 依 dependencies.lock 自動抓取的第三方元件(勿提交;lock 檔才提交)
+managed_components/
+dependencies.lock.bak
+
+# ==== 工具鏈 / Python ====
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# ==== 編輯器 / IDE ====
+.vscode/
+.idea/
+.cache/
+compile_commands.json
+
+# ==== 作業系統 ====
+.DS_Store
+Thumbs.db
+
+# ==== 開發暫存(串口測試 daemon 等,見 AGENT.md §5)====
+*.log
+*.cmd
+serial_io.py
+scratchpad/
+
+# 註:以下「不」忽略,需隨倉庫提交 —
+#   sdkconfig.defaults / partitions.csv  ← 建置與分區的權威來源
+#   devices/*/dependencies.lock          ← 鎖定 managed_components 版本,確保重現建置
+#   common/voice/voice.bin               ← 燒錄語音分區所需資產(由 tools/ 從 voice_list.tsv 產生)

@@ -1,0 +1,32 @@
+# --- 目標晶片:ESP32-S3FN8(雙核 240MHz;flash 封裝內 8MB)---
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# --- 控制台必須走 USB-Serial-JTAG(USB-C 原生 USB):
+#     UART0 預設腳 G43/G44 已被 I2S LRCK 與 IR 佔用(參考 §5.3),嚴禁 UART0 ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- Flash 8MB QIO + 自訂分區(容 app + voice)---
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- 無 PSRAM(ESP32-S3FN8):嚴禁出現任何 CONFIG_SPIRAM* 行 ---
+#     (勿照抄 StickS3/xingzhi 的 SPIRAM 三行;誤開會在啟動時 PSRAM 探測失敗甚至
+#      佔用引腳。本檔以「不出現」為正確狀態,建置後可用
+#      grep -c SPIRAM build/sdkconfig 應僅見 is-not-set 註釋行交叉檢查)
+
+# --- 主棧 & FreeRTOS(產品 §8.1:無 opus,8KB 足;1000Hz 供 10ms 去抖/20ms 音訊節拍)---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_HZ=1000
+
+# --- LVGL 字體(四機統一三檔:14/20/28)---
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+
+# --- Wi-Fi 僅用於 ESP-NOW:關 AMPDU 省內存(demo 已驗證;無 PSRAM 板尤其要省)---
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
