@@ -4,7 +4,12 @@
  * codec 為 I2S slave;寄存器序列參照 ES8311 DS + espressif/es8311 預設路徑;
  * 實機微調記入 §17。 */
 #include "es8311_cardputer.h"
+#include "board_config.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define ES8311_VOL_FULLSCALE 191   /* REG0x32:0xBF(=191)=0dB 滿刻度;255 會到 +32dB 破音域 */
 
 static const char *TAG = "es8311";
 static i2c_master_dev_handle_t s_dev;
@@ -22,7 +27,7 @@ esp_err_t es8311_cardputer_init(i2c_master_bus_handle_t bus, uint32_t sample_rat
     (void)sample_rate;                         /* 鎖定 16k;變更需重推 REG02(§8.1) */
     const i2c_device_config_t cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = 0x18,                /* CE 接地(參考 §3.3) */
+        .device_address = I2C_ADDR_ES8311,     /* CE 接地(參考 §3.3) */
         .scl_speed_hz = 100 * 1000,
     };
     esp_err_t r = i2c_master_bus_add_device(bus, &cfg, &s_dev);
@@ -56,6 +61,8 @@ esp_err_t es8311_cardputer_init(i2c_master_bus_handle_t bus, uint32_t sample_rat
         esp_err_t e = wr(seq[i].reg, seq[i].val);
         if (e != ESP_OK) { ESP_LOGW(TAG, "reg 0x%02x write failed (%d)", seq[i].reg, e); }
         /* codec 寫失敗只 LOGW 不中斷(S3 §21.2-2 慣例:無硬體時仍可跑) */
+        /* reset 斷言(0x00=0x1F)後需 ~20ms 沉降再解除,否則 codec bring-up 不穩(對齊 StickS3,#3) */
+        if (seq[i].reg == 0x00 && seq[i].val == 0x1F) vTaskDelay(pdMS_TO_TICKS(20));
     }
     ESP_LOGI(TAG, "ES8311 init done (SCLK-derived clock, no MCLK)");
     return ESP_OK;
@@ -64,7 +71,6 @@ esp_err_t es8311_cardputer_init(i2c_master_bus_handle_t bus, uint32_t sample_rat
 void es8311_cardputer_set_volume(uint8_t vol_0_100)
 {
     if (vol_0_100 > 100) vol_0_100 = 100;
-    uint8_t code = (uint8_t)((uint32_t)vol_0_100 * 191 / 100);   /* 0x32:0xBF=0dB 滿刻度
-                                                                (255 會到 +32dB 破音域) */
+    uint8_t code = (uint8_t)((uint32_t)vol_0_100 * ES8311_VOL_FULLSCALE / 100);
     wr(0x32, code);
 }

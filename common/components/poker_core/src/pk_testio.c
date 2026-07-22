@@ -48,5 +48,5 @@ void pk_testio_start(void)
         return;
     }
     xTaskCreate(testio_task, "testio", 3072, NULL, 3, NULL);
-    ESP_LOGI(TAG, "test injection ready (o/n/p/b/m)");
+    ESP_LOGI(TAG, "test injection ready (o/u/d/b/m)");
 }

@@ -82,7 +82,11 @@ void pn_add_peer(const uint8_t mac[6])
     if (esp_now_is_peer_exist(mac)) return;
     esp_now_peer_info_t peer = { .channel = 0, .ifidx = WIFI_IF_STA, .encrypt = false };
     memcpy(peer.peer_addr, mac, 6);
-    esp_now_add_peer(&peer);   /* EXIST 忽略 */
+    /* 對端表滿或 OOM 時 add 會失敗,之後對該 MAC 的單播全數落空;不可靜默(#18)。 */
+    esp_err_t r = esp_now_add_peer(&peer);
+    if (r != ESP_OK)
+        ESP_LOGW(TAG, "add_peer %02x:%02x:%02x:%02x:%02x:%02x failed: %s",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], esp_err_to_name(r));
 }
 
 void pn_send(const uint8_t dst[6], const void *data, size_t len)
@@ -93,7 +97,10 @@ void pn_send(const uint8_t dst[6], const void *data, size_t len)
 void pn_send_typed(const uint8_t dst[6], uint8_t type, const void *payload, uint16_t plen)
 {
     uint8_t buf[250];
-    if (sizeof(pn_hdr_t) + plen > sizeof(buf)) return;
+    if (sizeof(pn_hdr_t) + plen > sizeof(buf)) {   /* 超 ESP-NOW 上限:設計上不該發生,發生即程式錯誤(#16) */
+        ESP_LOGE(TAG, "pn_send_typed: type=%u plen=%u exceeds MTU, dropped", type, plen);
+        return;
+    }
     pn_hdr_t *h = (pn_hdr_t *)buf;
     h->magic = PN_MAGIC;
     h->version = PN_VERSION;

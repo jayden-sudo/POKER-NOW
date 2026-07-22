@@ -28,10 +28,14 @@
 #define BL_OUTPUT_INVERT    false
 
 // ---- 按鍵(輸入上拉低有效;物理左→右 = GPIO8, GPIO9, GPIO7【实机确认】)----
-#define BTN_OK_PIN          GPIO_NUM_8     // 物理最左 → KEY_OK(產品 §2.1 映射表)
-#define BTN_NEXT_PIN        GPIO_NUM_7     // 物理最右 → KEY_NEXT
-#define BTN_PWR_PIN         GPIO_NUM_9     // 物理中間(BOOT):不進共用層,長按=關機(§7)
-#define BTN_PWR_HOLD_MS     800            // demo 驗證值;關機屬破壞性但可攔截,足夠防誤觸
+// 命名依物理位置(專案慣例);各鍵→抽象意圖的實際映射見 hal_input.c:
+//   左 G8   單擊→UI_UP、長按→UI_MENU
+//   中 G9   單擊→UI_OK、長按→關機(BTN_PWR_HOLD_MS;不分配 UI 意圖)
+//   右 G7   單擊→UI_DOWN、長按→UI_BACK
+#define BTN_LEFT_PIN        GPIO_NUM_8     // 物理最左
+#define BTN_RIGHT_PIN       GPIO_NUM_7     // 物理最右
+#define BTN_MID_PIN         GPIO_NUM_9     // 物理中間(BOOT):短按=OK、長按=關機(§7)
+#define BTN_PWR_HOLD_MS     800            // 中鍵長按關機門檻;關機屬破壞性但可攔截,足夠防誤觸
 
 // ---- 電池 ADC(GPIO4 / ADC1_CH4 —— ADC1 與 Wi-Fi 無衝突,demo 驗證)----
 #define BAT_ADC_UNIT        ADC_UNIT_1

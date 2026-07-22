@@ -114,8 +114,26 @@ void pn_send_snapshot(const uint8_t dst[6])
     pn_send_typed(dst, PN_PKT_SNAPSHOT, &snap, sizeof(snap));
 }
 
+/* 快照來自被接受 epoch 的任意發送者,整份權威狀態不可全盤盡信:座位/計數/階段若越界,
+   後續會成為陣列索引或流入顯示。合法狀態必然通過(座位 <10 或 0xFF、n_players<=10、
+   phase 合法),故僅擋畸形快照,不會誤拒正常 resync(#12)。 */
+static bool state_sane(const pn_table_state_t *s)
+{
+    if (s->n_players > PN_MAX_PLAYERS) return false;
+    if (s->phase > PN_PH_PAUSED) return false;
+    if (s->button_seat != 0xFF && s->button_seat >= PN_MAX_PLAYERS) return false;
+    if (s->to_act_seat != 0xFF && s->to_act_seat >= PN_MAX_PLAYERS) return false;
+    for (int i = 0; i < PN_MAX_PLAYERS; i++)
+        if (s->p[i].seat != 0xFF && s->p[i].seat >= PN_MAX_PLAYERS) return false;
+    return true;
+}
+
 void pn_apply_snapshot(const pn_snapshot_t *snap)
 {
+    if (!state_sane(&snap->state)) {
+        ESP_LOGW(TAG, "snapshot rejected: state failed sanity check");
+        return;
+    }
     g_pb.st = snap->state;
     g_pb.next_expected_seq = (uint16_t)(snap->as_of_seq + 1);
     g_pb.last_recv_seq = snap->as_of_seq;
@@ -141,6 +159,7 @@ static void become_temp_master(void)
     g_pb.my_player_id = 0;
     g_pb.clock_inited = true; g_pb.clock_offset_q8 = 0;
     g_pb.seq_alloc = 1; g_pb.next_expected_seq = 1; g_pb.last_recv_seq = 0;
+    memset(g_pb.dedup, 0, sizeof(g_pb.dedup));   /* 新桌:清空命令去重表,勿沿用舊 (mac,cmd_id) (#17) */
 
     memset(&g_pb.st, 0, sizeof(g_pb.st));
     for (int i = 0; i < 10; i++) g_pb.st.p[i].seat = 0xFF;
@@ -256,7 +275,7 @@ static void on_hello(const pn_rx_item_t *rx)
         int slot = 0;
         for (int i = 0; i < 4; i++) {
             if (mac_eq(s_pend_cache[i].mac, rx->src) &&
-                now - s_pend_cache[i].t_us < 10000000LL) { fresh = false; break; }
+                now - s_pend_cache[i].t_us < (int64_t)PN_T_PEND_NOTIFY_MS * 1000) { fresh = false; break; }
             if (s_pend_cache[i].t_us <= s_pend_cache[slot].t_us) slot = i;
         }
         if (fresh) {
@@ -514,6 +533,9 @@ static void takeover_finish(void)
     g_pb.epoch++;
     memcpy(g_pb.master_mac, g_pb.self_mac, 6);
     g_pb.seq_alloc = (uint16_t)(g_pb.last_recv_seq + 1);
+    /* 新 epoch 上任:清空繼承自舊角色的命令去重表,否則可能對 cmd_id 撞號的新命令
+       回放舊 ACK(#17)。 */
+    memset(g_pb.dedup, 0, sizeof(g_pb.dedup));
     pn_set_role(ROLE_MASTER);
     pn_roster_add_peers();
     pn_evt_takeover_t tk = { .new_epoch = g_pb.epoch,
@@ -557,7 +579,7 @@ void pn_session_tick(void)
     case ROLE_PENDING:
         /* v1.1 真機修訂:等待批准期間 Master 失聯(心跳斷 10s)→ 回掃描 */
         if (g_pb.t_last_hb_rx &&
-            now - g_pb.t_last_hb_rx > 10000000LL) {
+            now - g_pb.t_last_hb_rx > (int64_t)PN_T_PEND_MASTER_LOST_MS * 1000) {
             ESP_LOGW(TAG, "pending master lost, back to scan");
             pbus_leave();
             break;

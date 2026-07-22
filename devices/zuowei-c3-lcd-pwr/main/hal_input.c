@@ -24,7 +24,7 @@ typedef struct { bool down, prev_raw, stable, long_fired; int64_t press_us; } ke
 static void btn_task(void *a)
 {
     (void)a;
-    const gpio_num_t lr_pin[2] = { BTN_OK_PIN /*左 G8=NEXT*/, BTN_NEXT_PIN /*右 G7=PREV*/ };
+    const gpio_num_t lr_pin[2] = { BTN_LEFT_PIN /*G8→UI_UP*/, BTN_RIGHT_PIN /*G7→UI_DOWN*/ };
     const int lr_single[2]     = { UI_UP, UI_DOWN };
     const int lr_long[2]       = { UI_MENU, UI_BACK };
     keyst_t lr[2] = {0};
@@ -46,7 +46,7 @@ static void btn_task(void *a)
             }
         }
         /* 中鍵:去抖 + 短放=OK / 長按=關機 */
-        bool mraw = gpio_get_level(BTN_PWR_PIN) == 0;
+        bool mraw = gpio_get_level(BTN_MID_PIN) == 0;
         if (mraw == mid_prev && mraw != mid_stable) {
             mid_stable = mraw;
             if (mraw) { mid_down = true; mid_ms = 0; }
@@ -61,7 +61,7 @@ static void btn_task(void *a)
 esp_err_t hal_input_init(hal_ui_cb_t cb)
 {
     s_cb = cb;
-    gpio_config_t io = { .pin_bit_mask = BIT64(BTN_OK_PIN) | BIT64(BTN_NEXT_PIN) | BIT64(BTN_PWR_PIN),
+    gpio_config_t io = { .pin_bit_mask = BIT64(BTN_LEFT_PIN) | BIT64(BTN_RIGHT_PIN) | BIT64(BTN_MID_PIN),
                          .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     ESP_ERROR_CHECK(gpio_config(&io));
     xTaskCreate(btn_task, "buttons", 2560, NULL, 6, NULL);

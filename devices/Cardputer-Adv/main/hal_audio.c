@@ -18,7 +18,7 @@
 static const char *TAG = "hal_audio";
 #define FRAME 320                              /* 20ms @16k */
 
-typedef struct { voice_id_t id; uint32_t at_ms; bool sched; } aq_item_t;
+typedef struct { voice_id_t id; uint32_t at_ms; bool sched; bool stop; } aq_item_t;
 static QueueHandle_t s_q;
 static i2s_chan_handle_t s_tx;
 static uint8_t s_vol = AUDIO_VOL_DEFAULT;
@@ -31,9 +31,10 @@ static uint32_t s_head_ms;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static bool time_ge(uint32_t a, uint32_t b) { return (int32_t)(a - b) >= 0; }
 
-void hal_audio_play(voice_id_t id)                { aq_item_t i = { id, 0, false }; if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { id, t, true };  if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_stop(void) { if (s_cur) { voice_close(s_cur); s_cur = NULL; } s_nimm = 0; s_npend = 0; }
+void hal_audio_play(voice_id_t id)                { aq_item_t i = { .id = id, .sched = false }; if (s_q) xQueueSend(s_q, &i, 0); }
+void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { .id = id, .at_ms = t, .sched = true }; if (s_q) xQueueSend(s_q, &i, 0); }
+/* stop 經佇列傳遞,清理只在 audio_task 內做,消除對 s_cur/計數器的資料競爭(UAF/double-free,#1)。 */
+void hal_audio_stop(void) { aq_item_t i = { .stop = true }; if (s_q) xQueueSend(s_q, &i, 0); }
 uint16_t hal_audio_path_latency_ms(void) { return AUDIO_PATH_LATENCY_MS; }
 void hal_audio_set_volume(uint8_t pct) { if (pct > 100) pct = 100; s_vol = pct; }
 
@@ -47,6 +48,11 @@ static void drain_queue(void)
 {
     aq_item_t it;
     while (xQueueReceive(s_q, &it, 0) == pdTRUE) {
+        if (it.stop) {   /* 在 audio_task 內清理,無競爭(#1) */
+            if (s_cur) { voice_close(s_cur); s_cur = NULL; }
+            s_npend = 0; s_nimm = 0;
+            continue;
+        }
         if (it.sched) {
             if (s_npend < 4) {
                 /* 依 at_ms 升序插入 */
@@ -135,6 +141,7 @@ static esp_err_t voice_partition_load(void)
 esp_err_t hal_audio_init(void)
 {
     s_q = xQueueCreate(16, sizeof(aq_item_t));
+    if (!s_q) { ESP_LOGE(TAG, "audio queue alloc failed"); return ESP_ERR_NO_MEM; }
 
     i2s_chan_config_t ch = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     ch.dma_desc_num = 4; ch.dma_frame_num = 240;          /* 4×240 ≈ 60ms 環形深度(不改!
@@ -155,7 +162,8 @@ esp_err_t hal_audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &std));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));            /* ★ 常開,之後永不 disable */
 
-    es8311_cardputer_init(board_i2c_bus(), AUDIO_SAMPLE_RATE);
+    esp_err_t codec = es8311_cardputer_init(board_i2c_bus(), AUDIO_SAMPLE_RATE);
+    if (codec != ESP_OK) ESP_LOGE(TAG, "ES8311 init failed (%s); audio may be silent", esp_err_to_name(codec));
     es8311_cardputer_set_volume(100);   /* v1.4:codec 固定 0dB —— 音量單一由軟體增益(apply_volume)
                     控制,修「codec+軟體雙重衰減 ≈ -24dB 近無聲」bug */
     /* NS4150B 無使能腳:耳機插入由硬體自動切換揚聲器/耳機,軟體不管(§8.1) */

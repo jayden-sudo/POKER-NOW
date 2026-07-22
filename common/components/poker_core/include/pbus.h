@@ -1,6 +1,14 @@
 #pragma once
 /*
  * pbus.h -- 協定層對遊戲邏輯的完整介面(協定 §14 + 裁定 R2 補遺)。
+ *
+ * 執行緒模型(併發規範 §7,務必遵守):
+ *   - 存在兩條長駐 task:pbus task(收封包 → 套 reducer → 發事件/回呼)與 UI task(算畫面)。
+ *   - 所有 on_event / on_role / on_link 回呼、cmd_handler、idle_hook 都在「pbus task」內執行。
+ *   - pbus_submit_cmd / pbus_publish_evt / pbus_leave:可自任意 task 呼叫(內部自帶鎖/佇列)。
+ *   - pbus_state():回傳「live 權威狀態」的指標,pbus task 會持續改寫它 —— 僅可在 pbus task
+ *     內同步讀取;UI task 不得長期持有或跨事件解參考(改讀 game_view() 的定格快照)。
+ *   - master_engine_* 全部只在 pbus task 內被呼叫(掛在 cmd_handler / idle_hook 上)。
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -29,7 +37,7 @@ esp_err_t pbus_submit_cmd(uint8_t cmd, const void *arg, size_t len);
 esp_err_t pbus_publish_evt(uint8_t evt, const void *body, size_t len, uint32_t play_at);
 uint32_t  pbus_table_now(void);
 uint32_t  pbus_local_time_for(uint32_t table_ms);
-const pn_table_state_t *pbus_state(void);
+const pn_table_state_t *pbus_state(void);  /* live 狀態,僅 pbus task 內讀;見上方執行緒模型 */
 
 /* ---- 介面補遺(裁定 R2)---- */
 typedef struct { uint8_t result; uint8_t reason; } pbus_cmd_verdict_t;

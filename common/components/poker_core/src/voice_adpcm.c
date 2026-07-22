@@ -62,6 +62,14 @@ esp_err_t voice_init(const void *bin, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
     s_count = rd16(p + 4);
+    /* 索引表為 s_count 筆、每筆 12 bytes,緊接 8-byte 檔頭。若宣告的 clip 數超出實際檔長,
+       idx_of 會讀到檔外 —— 驗證整張索引表落在 buffer 內,否則拒絕(防損毀資產 OOB)。 */
+    if (len < 8 + (size_t)s_count * 12) {
+        ESP_LOGE(TAG, "voice.bin truncated: %u clips need %u bytes, have %u",
+                 (unsigned)s_count, (unsigned)(8 + s_count * 12), (unsigned)len);
+        s_base = NULL;
+        return ESP_ERR_INVALID_STATE;
+    }
     s_base = p;
     s_len = len;
     ESP_LOGI(TAG, "voice.bin ok: %u clips, %u bytes", (unsigned)s_count, (unsigned)len);
@@ -73,7 +81,8 @@ voice_stream_t *voice_open(voice_id_t id)
     if (!s_base) return NULL;
     idx_ent_t e = idx_of(id);
     if (e.pcm_samples == 0 || e.adpcm_bytes < 4) return NULL;
-    if (e.data_off + e.adpcm_bytes > s_len) return NULL;
+    /* 溢位安全:data_off + adpcm_bytes 皆 uint32,直接相加可能環繞而繞過界限檢查。 */
+    if (e.data_off > s_len || e.adpcm_bytes > s_len - e.data_off) return NULL;
 
     struct voice_stream *h = NULL;
     for (int i = 0; i < MAX_STREAMS; i++)

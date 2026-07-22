@@ -35,6 +35,9 @@ void game_view_publish(void)
     int nxt = 1 - cur;
     game_view_t *v = &s_view[nxt];
     memset(v, 0, sizeof(*v));
+    /* 快照整份權威狀態進 view;之後一律讀本地 snap,不再指向 pbus 的 live state。 */
+    memcpy(&v->snap, st, sizeof(v->snap));
+    st = &v->snap;
     v->st = st;
     v->my_player_id = pbus_my_player_id();
     uint8_t my_seat = 0xFF;
@@ -46,6 +49,8 @@ void game_view_publish(void)
 
     bool my_turn = (st->phase == PN_PH_HAND && my_seat != 0xFF && st->to_act_seat == my_seat);
     v->my_turn = my_turn;
+    /* 以下下注上限算式為成員側預覽,與 master_engine.c:issue_action_req() 的權威計算「必須一致」;
+       唯一刻意差異:引擎另有 s_acted「補跟禁加注」規則(view 讀不到 s_acted)。同步改動(#14)。 */
     if (my_turn && v->my_player_id < 10) {
         const pn_player_t *me = &st->p[v->my_player_id];
         v->call_amt = st->cur_bet;
@@ -76,15 +81,40 @@ const game_view_t *game_view(void)
 
 static void set_local_reject(uint8_t r) { s_local_reject = r; game_view_publish(); }
 
+/* 各事件最小 body 長度。事件一律以 sizeof(struct) 全長送出(見 pbus_session/master_engine
+   的 pn_publish_locked/ME_PUB 呼叫),故合法事件必 >= 此值;截斷/惡意封包在此擋下,避免
+   reducer 讀進封包尾端未初始化位元組而汙染權威狀態(#5)。只列會解參考 body 的事件。 */
+static size_t evt_min_body(uint8_t evt)
+{
+    switch (evt) {
+    case E_ROSTER:        return sizeof(pn_evt_roster_t);
+    case E_SEAT_SET:      return sizeof(pn_evt_seat_set_t);
+    case E_CHIPS_SET:     return sizeof(pn_evt_chips_set_t);
+    case E_TABLE_CONFIG:  return sizeof(pn_evt_table_config_t);
+    case E_HAND_START:    return sizeof(pn_evt_hand_start_t);
+    case E_ACTION_REQ:    return sizeof(pn_evt_action_req_t);
+    case E_ACTION:        return sizeof(pn_evt_action_t);
+    case E_STREET:        return sizeof(pn_evt_street_t);
+    case E_HAND_RESULT:   return sizeof(pn_evt_hand_result_t);
+    case E_HAND_ABORT:    return sizeof(pn_evt_hand_abort_t);
+    case E_PLAYER_JOINED: return sizeof(pn_evt_player_joined_t);
+    case E_PLAYER_LEFT:   return sizeof(pn_evt_player_left_t);
+    case E_PLAYER_OFFLINE:
+    case E_PLAYER_BACK:   return sizeof(pn_evt_player_id_t);
+    default:              return 0;   /* 無 body 或 reducer 不解參考 body 的事件 */
+    }
+}
+
 /* ---------------- 純 reducer ---------------- */
 void game_state_apply(pn_table_state_t *st, const pn_evt_hdr_t *e,
                       const void *body, size_t len)
 {
-    (void)len;
+    if (len < evt_min_body(e->evt)) return;   /* 截斷/惡意事件:不套用 */
     switch (e->evt) {
     case E_ROSTER: {
         const pn_evt_roster_t *r = (const pn_evt_roster_t *)body;
-        st->n_players = r->n;
+        /* r->n 來自線上,可能因損毀/惡意超過 10;夾限以免流入顯示與比較(索引迴圈另有 i<10 護欄)。 */
+        st->n_players = (r->n > PN_MAX_PLAYERS) ? PN_MAX_PLAYERS : r->n;
         for (int i = 0; i < 10; i++) {
             pn_player_t *p = &st->p[i];
             if (i < r->n) {

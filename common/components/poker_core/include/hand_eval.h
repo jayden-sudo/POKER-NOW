@@ -10,6 +10,9 @@ extern "C" {
 #endif
 
 typedef struct { uint8_t cat; uint8_t kick[5]; } hand_rank_t;  /* cat 同協定 §11.4;9=皇家 */
+/* hand_rank_cmp 以 memcmp(a,b,6) 做字典序比較,依賴此結構恰為 6 個連續 uint8(cat 在前、
+   kick[5] 在後、無填充)。若佈局改變,比較會靜默出錯 —— 用靜態斷言把不變量鎖死。 */
+_Static_assert(sizeof(hand_rank_t) == 6, "hand_rank_t must be 6 packed bytes for hand_rank_cmp memcmp");
 
 hand_rank_t hand_eval7(const uint8_t cards[7]);
 int hand_rank_cmp(const hand_rank_t *a, const hand_rank_t *b);  /* >0:a 勝;0:平 */

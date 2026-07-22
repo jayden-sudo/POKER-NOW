@@ -4,9 +4,12 @@
  * {4096000,16000}:pre_div=1 pre_multi=x1 bclk_div=4 lrck=256 osr=0x10。
  * §21.R:舊序列 0x01=0x30 未開 DAC 時鐘、缺 0x12/0x13 輸出級 —— 已修正。 */
 #include "es8311_min.h"
+#include "board_config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#define ES8311_VOL_FULLSCALE 191   /* REG0x32:0xBF(=191)=0dB 滿刻度;255 會到 +32dB 破音域 */
 
 static const char *TAG = "es8311";
 static i2c_master_dev_handle_t s_dev;
@@ -28,7 +31,7 @@ esp_err_t es8311_min_init(i2c_master_bus_handle_t bus, uint32_t mclk_hz, uint32_
     (void)mclk_hz; (void)sample_rate;
     const i2c_device_config_t cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = 0x18,
+        .device_address = I2C_ADDR_ES8311,
         .scl_speed_hz = 100 * 1000,
     };
     esp_err_t r = i2c_master_bus_add_device(bus, &cfg, &s_dev);
@@ -83,13 +86,12 @@ esp_err_t es8311_min_init(i2c_master_bus_handle_t bus, uint32_t mclk_hz, uint32_
         }
     }
     ESP_LOGI(TAG, "ES8311 init done, readback %s", ok ? "verified (10/10)" : "MISMATCH");
-    return ESP_OK;
+    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;   /* 回讀失配 → 非 OK,由呼叫端記錄(#8) */
 }
 
 void es8311_min_set_volume(uint8_t vol_0_100)
 {
     if (vol_0_100 > 100) vol_0_100 = 100;
-    uint8_t code = (uint8_t)((uint32_t)vol_0_100 * 191 / 100);   /* 0x32:0xBF=0dB 滿刻度
-                                                                (255 會到 +32dB 破音域) */
+    uint8_t code = (uint8_t)((uint32_t)vol_0_100 * ES8311_VOL_FULLSCALE / 100);
     wr(0x32, code);
 }

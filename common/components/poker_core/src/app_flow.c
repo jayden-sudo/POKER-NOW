@@ -21,6 +21,11 @@
 static const char *TAG = "app_flow";
 ui_ctx_t g_ui;
 
+/* UI 本地時序(微秒);集中具名以免散落魔術數字(#20)。 */
+#define UI_ABORT_SCREEN_US   3000000   /* 流局畫面停留 3s */
+#define UI_ENTER_GUARD_US     150000   /* 進 MY_TURN 後吞殘留按壓的 150ms 窗口 */
+#define UI_BATT_REFRESH_US  10000000   /* 電量輪詢間隔 10s */
+
 static uint8_t s_prompt_seat = 1;          /* 最近 E_SEAT_PROMPT 座位 */
 static pn_evt_hand_result_t s_result;      /* 最近結算 */
 static bool s_have_result;
@@ -59,7 +64,6 @@ static void schedule_result_audio(const pn_evt_hand_result_t *r, uint32_t play_a
 /* pbus event hook(pbus task 上下文) */
 static void on_evt(const pn_evt_hdr_t *e, const void *body, size_t len)
 {
-    (void)len;
     const game_view_t *v = game_view();
     switch (e->evt) {
     case E_DEALER_CALL: hal_audio_play_at(V_CONFIRM_DEALER, local_of(e->play_at)); break;
@@ -106,19 +110,19 @@ static void on_evt(const pn_evt_hdr_t *e, const void *body, size_t len)
         break;
     }
     case E_HAND_RESULT:
+        if (len < sizeof(s_result)) break;   /* 截斷封包不可信,忽略以免讀進未初始化尾段 */
         memcpy(&s_result, body, sizeof(s_result));
         s_have_result = true;
         g_ui.screen = SCR_RESULT;
         g_ui.result_slot = 0;
         g_ui.result_summary = false;
-        g_ui.result_next_us = esp_timer_get_time() + (int64_t)local_of(e->play_at) * 0; /* 立即起頁 */
         g_ui.result_next_us = esp_timer_get_time() + (int64_t)s_result.slot_gap_ms * 1000;
         schedule_result_audio(&s_result, e->play_at);
         break;
     case E_HAND_ABORT:
         hal_audio_play_at(V_HAND_ABORT, local_of(e->play_at));
         g_ui.screen = SCR_ABORT;
-        s_abort_until = esp_timer_get_time() + 3000000;
+        s_abort_until = esp_timer_get_time() + UI_ABORT_SCREEN_US;
         break;
     case E_GAME_PAUSE:  hal_audio_play(V_PAUSED); break;
     case E_GAME_RESUME: hal_audio_play(V_RESUMED); break;
@@ -175,7 +179,7 @@ static void enter_screen(screen_t s)
         break;
     case SCR_MY_TURN:
         /* guard:進場 150ms 吞掉跨畫面殘留按壓(人類刻意操作 ~300ms+ 不受影響) */
-        g_ui.guard_until_us = esp_timer_get_time() + 150000;
+        g_ui.guard_until_us = esp_timer_get_time() + UI_ENTER_GUARD_US;
         build_actions();
         break;
     default: break;
@@ -199,7 +203,8 @@ static void sysmenu_open(void)
 }
 static void sysmenu_handle(hal_ui_event_t ev)
 {
-    static const uint8_t VOLS[3] = { 40, 70, 100 };
+    static const uint8_t VOLS[] = { 10, 40, 70, 100 };   /* 音量檔位:最低 10(使用者要求) */
+    static const int     N_VOLS = (int)(sizeof(VOLS) / sizeof(VOLS[0]));
     static const uint8_t BRIS[3] = { 30, 60, 100 };
     if (ev == UI_DOWN) { g_ui.sysmenu_cursor = (g_ui.sysmenu_cursor + 1) % 4; return; }   /* 下移一項 */
     if (ev == UI_UP)   { g_ui.sysmenu_cursor = (g_ui.sysmenu_cursor + 3) % 4; return; }   /* 上移一項 */
@@ -208,8 +213,8 @@ static void sysmenu_handle(hal_ui_event_t ev)
     switch (g_ui.sysmenu_cursor) {
     case 0: /* RESUME */ g_ui.sysmenu_open = false; enter_screen(screen_from_state()); break;
     case 1: { /* VOLUME */
-        int idx = 0; for (int i = 0; i < 3; i++) if (VOLS[i] == g_ui.volume) idx = i;
-        g_ui.volume = VOLS[(idx + 1) % 3];
+        int idx = 0; for (int i = 0; i < N_VOLS; i++) if (VOLS[i] == g_ui.volume) idx = i;
+        g_ui.volume = VOLS[(idx + 1) % N_VOLS];
         hal_audio_set_volume(g_ui.volume);
         hal_settings_save_volume(g_ui.volume);
         hal_audio_play(V_BEEP);
@@ -333,7 +338,7 @@ static void refresh_battery(int64_t now)
     if (now < g_ui.batt_next_us) return;
     g_ui.batt_pct = hal_battery_pct();
     g_ui.batt_charging = hal_battery_charging();
-    g_ui.batt_next_us = now + 10000000;   /* 10s */
+    g_ui.batt_next_us = now + UI_BATT_REFRESH_US;
 }
 
 static void ui_task(void *arg)

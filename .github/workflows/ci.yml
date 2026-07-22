@@ -1,0 +1,52 @@
+name: CI
+
+# POKER-NOW 持續整合:
+#   1) host-tests  —— 純 C 遊戲邏輯單元測試,秒級、無需 ESP-IDF,是每次 push 的第一道防線。
+#   2) firmware    —— 四台裝置各自 idf.py build,確保共用核心改動不會弄壞任一板的韌體。
+# 只要任一 job 失敗即阻擋合併。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新 push 取消仍在跑的舊 run,節省 runner。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: host unit tests (hand_eval / side_pot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run host unit tests
+        run: tools/run_tests.sh   # -Werror 建置 + 執行;任何警告或失敗即非零退出
+
+  firmware:
+    name: build ${{ matrix.device }} (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: StickS3
+            target: esp32s3
+          - device: zuowei-c3-lcd-pwr
+            target: esp32c3
+          - device: xingzhi-cube-1.54tft-wifi
+            target: esp32s3
+          - device: Cardputer-Adv
+            target: esp32s3
+    steps:
+      - uses: actions/checkout@v4
+      # 官方 ESP-IDF CI action:拉 espressif/idf:${esp_idf_version} 容器,在 path 下 idf.py build。
+      # 版本須與本專案要求一致(見根 README / CLAUDE.md)。
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0.1
+          target: ${{ matrix.target }}
+          path: devices/${{ matrix.device }}

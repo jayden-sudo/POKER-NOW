@@ -117,8 +117,7 @@ static void shuffle(void)
 }
 static uint8_t draw(void) { return s_deck[s_deck_pos++]; }
 
-static void settle_hand(void);
-static void advance_action(void);
+static void settle_hand(uint32_t extra_ms);
 static void advance_action_from(uint8_t start);
 
 static uint8_t count_active(void)
@@ -158,6 +157,8 @@ static void begin_hand(void)
     /* 組 E_HAND_START */
     pn_evt_hand_start_t hs;
     memset(&hs, 0, sizeof(hs));
+    /* hand_no 為 uint8,第 256 手後環繞回 0;僅用於顯示與 result/abort 的寬鬆比對,
+       單場對局不可能打滿 256 手,環繞無實害 —— 明確接受(#15)。 */
     hs.hand_no = (uint8_t)(st->hand_no + 1);
     hs.button_seat = button;
     hs.sb_seat = sb_seat; hs.bb_seat = bb_seat;
@@ -190,7 +191,7 @@ static void begin_hand(void)
     memset(s_acted, 0, sizeof(s_acted));
 
     if (nd < 2) {   /* SOLO/單人:只剩一人未棄 → 立即結算 reason=1 */
-        settle_hand();
+        settle_hand(0);
         return;
     }
     /* preflop 首行動 = bb 左手(heads-up:button=sb 先動)(§11.3/§11.7;
@@ -226,24 +227,38 @@ static uint8_t count_can_act(void)
     return c;
 }
 
-static void collect_and_next_street(void);
+static void collect_and_next_street(uint32_t extra_ms);
+
+/* 本街「可行動」:已發牌、未棄、未全下(與 count_can_act 同一謂詞)。 */
+static bool seat_can_act(uint8_t seat)
+{
+    int pid = seat_pid(seat);
+    if (pid < 0) return false;
+    uint8_t f = ST()->p[pid].flags;
+    return (f & PN_PF_DEALT) && !(f & (PN_PF_FOLDED | PN_PF_ALLIN));
+}
 
 static uint8_t first_actor_of_street(void)
 {
-    const pn_table_state_t *st = ST();
-    uint8_t button = st->button_seat;
-    /* postflop:按鈕左手第一個仍在局者;preflop 由 begin 另處理 */
+    /* postflop 首行動:按鈕左手第一個「可行動」座位。必須排除全下者 —— 否則會把
+       E_ACTION_REQ 發給無法回應的 all-in 玩家(其 UI 不給行動),整手卡死。
+       (本函式在 E_STREET 套用前呼叫,但僅讀 DEALT/FOLDED/ALLIN 旗標,街轉換不改這些旗標,
+        故結果與套用後一致。)preflop 首行動由 begin_hand 另算。 */
+    uint8_t button = ST()->button_seat;
     uint8_t n = (uint8_t)(max_seat() + 1);
     for (uint8_t off = 1; off <= n; off++) {
         uint8_t s = (uint8_t)((button + off) % n);
-        if (need_act(s) || (seat_pid(s) >= 0 && (st->p[seat_pid(s)].flags & PN_PF_DEALT) &&
-                            !(st->p[seat_pid(s)].flags & PN_PF_FOLDED))) return s;
+        if (seat_can_act(s)) return s;
     }
     return 0xFF;
 }
 
 static void issue_action_req(uint8_t seat)
 {
+    /* 下注上限算式(call_amt / can_check / max_raise_to / min_raise_to)與
+       game_state.c:game_view_publish() 的成員側預覽「必須保持一致」,唯一刻意差異是:
+       本引擎握有權威 s_acted[] 而 view 讀不到,故本處對「補跟禁加注」多一道 s_acted 判斷。
+       改動任一處的算式時,務必同步另一處(#14)。 */
     const pn_table_state_t *st = ST();
     int pid = seat_pid(seat);
     if (pid < 0) return;
@@ -268,8 +283,8 @@ static void issue_action_req(uint8_t seat)
 /* 決定下一步:發 E_ACTION_REQ 或收池進街 或結算(B2:可指定掃描起點) */
 static void advance_action_from(uint8_t start)
 {
-    if (count_in_hand() <= 1) { settle_hand(); return; }   /* 只剩一人 */
-    if (count_can_act() == 0) { collect_and_next_street(); return; }  /* 全 all-in → runout */
+    if (count_in_hand() <= 1) { settle_hand(0); return; }   /* 只剩一人 */
+    if (count_can_act() == 0) { collect_and_next_street(0); return; }  /* 全 all-in → runout */
 
     uint8_t n = (uint8_t)(max_seat() + 1);
     for (uint8_t off = 0; off <= n; off++) {
@@ -277,42 +292,40 @@ static void advance_action_from(uint8_t start)
         if (need_act(s)) { issue_action_req(s); return; }
     }
     /* 無人需行動 → 收池進下一街 */
-    collect_and_next_street();
+    collect_and_next_street(0);
 }
 
-static void advance_action(void)
-{
-    const pn_table_state_t *st = ST();
-    advance_action_from((st->to_act_seat != 0xFF) ? st->to_act_seat : st->button_seat);
-}
-
-static void collect_and_next_street(void)
+/* extra_ms:runout(全員 all-in 自動發完剩餘街道)時,每多發一街就累加 PK_RUNOUT_STREET_MS,
+   讓各街的公共牌揭示與語音播報依序錯開,而非全部擠在同一 play_at 同時觸發(#19)。
+   正常有人行動的街道 extra_ms 恆為 0。 */
+static void collect_and_next_street(uint32_t extra_ms)
 {
     const pn_table_state_t *st = ST();
     /* 收池:pot += Σ bet_round */
     uint32_t pot = st->pot;
     for (int i = 0; i < st->n_players && i < 10; i++) pot += st->p[i].bet_round;
 
-    if (st->street >= 3) { settle_hand(); return; }   /* river 結束 → 攤牌 */
+    if (st->street >= 3) { settle_hand(extra_ms); return; }   /* river 結束 → 攤牌 */
 
     uint8_t next_street = (uint8_t)(st->street + 1);
     uint8_t first = (count_can_act() >= 1) ? first_actor_of_street() : 0xFF;
-    uint32_t play_at = now_table() + PN_T_AUDIO_LEAD_MS;
+    uint32_t play_at = now_table() + PN_T_AUDIO_LEAD_MS + extra_ms;
     pn_evt_street_t ev = { .street = next_street, .pot = (uint16_t)pot, .first_seat = first };
     ME_PUB(E_STREET, &ev, sizeof(ev), play_at);
     memset(s_acted, 0, sizeof(s_acted));
 
     if (first == 0xFF) {
-        /* runout:繼續發完剩餘街道(遞迴,play_at 間隔 ≥3500ms 由呼叫時序近似) */
-        if (next_street < 3) { collect_and_next_street(); }
-        else settle_hand();
+        /* runout:繼續發完剩餘街道,下一街與結算再各錯開一個 PK_RUNOUT_STREET_MS */
+        if (next_street < 3) collect_and_next_street(extra_ms + PK_RUNOUT_STREET_MS);
+        else settle_hand(extra_ms + PK_RUNOUT_STREET_MS);
     } else {
         issue_action_req(first);
     }
 }
 
 /* ============ 結算(側池) ============ */
-static void settle_hand(void)
+/* extra_ms:runout 時累積的偏移,使「贏家/籌碼」播報排在最後一街揭示之後(#19)。 */
+static void settle_hand(uint32_t extra_ms)
 {
     const pn_table_state_t *st = ST();
     sp_player_t sp[10];
@@ -364,7 +377,7 @@ static void settle_hand(void)
     }
     r.n_show = (uint8_t)nshow;
 
-    ME_PUB(E_HAND_RESULT, &r, sizeof(r), now_table() + PN_T_AUDIO_LEAD_MS);
+    ME_PUB(E_HAND_RESULT, &r, sizeof(r), now_table() + PN_T_AUDIO_LEAD_MS + extra_ms);
     s_hand_active = false;
     s_deadline = pn_now_us() + (int64_t)PN_T_READY_AUTO_MS * 1000;
 }
@@ -385,7 +398,6 @@ static pbus_cmd_verdict_t verdict(uint8_t result, uint8_t reason)
 pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
                                         const void *arg, size_t len)
 {
-    (void)len;
     if (!s_enabled) return verdict(PN_CMD_NOT_MASTER, 0);
     const pn_table_state_t *st = ST();
 
@@ -403,7 +415,11 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
 
     case C_SEAT_CLAIM: {
         if (st->phase != PN_PH_SEATING) return verdict(PN_CMD_STALE, 0);
+        if (len < sizeof(pn_cmd_seat_t)) return verdict(PN_CMD_REJECT, PN_RJ_WRONG_PHASE);
         const pn_cmd_seat_t *sc = (const pn_cmd_seat_t *)arg;
+        /* seat_no 是後續多處陣列索引(s_acted[seat] 等):越界值會 OOB 寫入靜態區,
+           必須擋在此(成員可送任意 seat_no,不可信)。合法座位 0..PN_MAX_PLAYERS-1。 */
+        if (sc->seat_no >= PN_MAX_PLAYERS) return verdict(PN_CMD_REJECT, PN_RJ_SEAT_TAKEN);
         if (player_id < 10 && st->p[player_id].seat != 0xFF) return verdict(PN_CMD_REJECT, PN_RJ_SEAT_TAKEN);
         if (seat_pid(sc->seat_no) >= 0) return verdict(PN_CMD_REJECT, PN_RJ_SEAT_TAKEN);
         pn_evt_seat_set_t ss = { .seat_no = sc->seat_no, .player_id = player_id, .is_auto = 0 };
@@ -418,6 +434,7 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
     }
 
     case C_SET_CHIPS: {
+        if (len < sizeof(pn_cmd_chips_t)) return verdict(PN_CMD_REJECT, PN_RJ_BAD_AMOUNT);
         const pn_cmd_chips_t *cc = (const pn_cmd_chips_t *)arg;
         if (cc->amount < 1 || cc->amount > PK_CHIPS_MAX) return verdict(PN_CMD_REJECT, PN_RJ_BAD_AMOUNT);
         pn_evt_chips_set_t cs = { .player_id = player_id, .amount = cc->amount, .is_auto = 0 };
@@ -428,6 +445,7 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
 
     case C_SET_BLINDS: {
         if (st->phase != PN_PH_BLINDS) return verdict(PN_CMD_STALE, 0);
+        if (len < sizeof(pn_cmd_blinds_t)) return verdict(PN_CMD_REJECT, PN_RJ_BAD_CONFIG);
         const pn_cmd_blinds_t *cb = (const pn_cmd_blinds_t *)arg;
         if (cb->sb < 1 || cb->bb < cb->sb || (cb->bet_cap != 0 && cb->bet_cap < cb->bb))
             return verdict(PN_CMD_REJECT, PN_RJ_BAD_CONFIG);
@@ -439,6 +457,7 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
 
     case C_ACTION: {
         if (st->phase != PN_PH_HAND) return verdict(PN_CMD_STALE, 0);
+        if (len < sizeof(pn_cmd_action_t)) return verdict(PN_CMD_REJECT, PN_RJ_BAD_AMOUNT);
         const pn_cmd_action_t *ca = (const pn_cmd_action_t *)arg;
         int pid = player_id;
         if (pid < 0 || pid >= 10) return verdict(PN_CMD_REJECT, PN_RJ_WRONG_PHASE);
@@ -504,10 +523,13 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
         ev.cur_bet = new_cur;
         ev.raise_count = new_rc;
         s_acted[seat] = 1;
-        ev.next_seat = 0xFF;   /* 由 reducer 後 advance_action 決定;先填 0xFF */
+        ev.next_seat = 0xFF;   /* 由 reducer 後 advance_action_from 決定;先填 0xFF */
         ME_PUB(E_ACTION, &ev, sizeof(ev), 0);
 
-        advance_action();
+        /* 從「剛行動的座位」順時針找下一位(off=0 即行動者,已行動故被 need_act 略過)。
+           不可從按鈕重掃:E_ACTION 已把 to_act_seat 設 0xFF,若靠它會退化成每次從按鈕起,
+           導致行動順序錯亂(#10)。 */
+        advance_action_from(seat);
         return verdict(PN_CMD_OK, 0);
     }
 
@@ -517,6 +539,7 @@ pbus_cmd_verdict_t master_engine_on_cmd(uint8_t player_id, uint8_t cmd,
         return verdict(PN_CMD_OK, 0);
 
     case C_JOIN_DECIDE: {
+        if (len < sizeof(pn_cmd_join_decide_t)) return verdict(PN_CMD_REJECT, PN_RJ_WRONG_PHASE);
         const pn_cmd_join_decide_t *jd = (const pn_cmd_join_decide_t *)arg;
         pn_evt_join_decided_t ev = { .cand_id = jd->player_id, .allow = jd->allow, .player_id = jd->player_id };
         ME_PUB(E_JOIN_DECIDED, &ev, sizeof(ev), 0);

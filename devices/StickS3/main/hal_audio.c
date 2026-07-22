@@ -18,10 +18,11 @@
 static const char *TAG = "hal_audio";
 #define FRAME 320                              /* 20ms @16k */
 
-typedef struct { voice_id_t id; uint32_t at_ms; bool sched; } aq_item_t;
+typedef struct { voice_id_t id; uint32_t at_ms; bool sched; bool stop; } aq_item_t;
 static QueueHandle_t s_q;
 static i2s_chan_handle_t s_tx;
 static uint8_t s_vol = AUDIO_VOL_DEFAULT;
+static volatile bool s_ext_pwr = true;   /* 快取外部供電狀態,~1Hz 由 audio_task 更新(#2) */
 
 static aq_item_t s_pend[4]; static int s_npend;
 static aq_item_t s_imm[8];  static int s_nimm;
@@ -31,16 +32,18 @@ static uint32_t s_head_ms;
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static bool time_ge(uint32_t a, uint32_t b) { return (int32_t)(a - b) >= 0; }
 
-void hal_audio_play(voice_id_t id)                { aq_item_t i = { id, 0, false }; if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { id, t, true };  if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_stop(void) { if (s_cur) { voice_close(s_cur); s_cur = NULL; } s_nimm = 0; s_npend = 0; }
+void hal_audio_play(voice_id_t id)                { aq_item_t i = { .id = id, .sched = false }; if (s_q) xQueueSend(s_q, &i, 0); }
+void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { .id = id, .at_ms = t, .sched = true }; if (s_q) xQueueSend(s_q, &i, 0); }
+/* stop 經佇列傳遞,真正清理只在 audio_task 內做,消除與播放任務對 s_cur/計數器的資料競爭
+   (原本在呼叫者任務直接 voice_close(s_cur) 會與 audio_task 的 voice_read/close 撞成 UAF/double-free,#1)。 */
+void hal_audio_stop(void) { aq_item_t i = { .stop = true }; if (s_q) xQueueSend(s_q, &i, 0); }
 uint16_t hal_audio_path_latency_ms(void) { return AUDIO_PATH_LATENCY_MS; }
 void hal_audio_set_volume(uint8_t pct) { if (pct > 100) pct = 100; s_vol = pct; }
 
 static uint8_t effective_volume(void)
 {
     uint8_t v = s_vol;
-    if (!m5pm1_is_external_powered() && v > AUDIO_VOL_BATT_MAX) v = AUDIO_VOL_BATT_MAX;
+    if (!s_ext_pwr && v > AUDIO_VOL_BATT_MAX) v = AUDIO_VOL_BATT_MAX;   /* 讀快取,不在音框內做 I2C(#2) */
     return v;
 }
 
@@ -48,6 +51,11 @@ static void drain_queue(void)
 {
     aq_item_t it;
     while (xQueueReceive(s_q, &it, 0) == pdTRUE) {
+        if (it.stop) {   /* 在 audio_task 內清理,無競爭(#1) */
+            if (s_cur) { voice_close(s_cur); s_cur = NULL; }
+            s_npend = 0; s_nimm = 0;
+            continue;
+        }
         if (it.sched) {
             if (s_npend < 4) {
                 /* 依 at_ms 升序插入 */
@@ -94,7 +102,9 @@ static void audio_task(void *arg)
     (void)arg;
     int16_t buf[FRAME];
     s_head_ms = now_ms() + AUDIO_PATH_LATENCY_MS;
+    uint32_t frame = 0;
     for (;;) {
+        if ((frame++ % 50) == 0) s_ext_pwr = m5pm1_is_external_powered();   /* ~1Hz I2C,非每音框(#2) */
         drain_queue();
         memset(buf, 0, sizeof(buf));                       /* 1) 常開靜音填充 */
         if (s_npend && time_ge(s_head_ms + 20, s_pend[0].at_ms)) {   /* 2) 排程搶佔 */
@@ -136,6 +146,7 @@ static esp_err_t voice_partition_load(void)
 esp_err_t hal_audio_init(void)
 {
     s_q = xQueueCreate(16, sizeof(aq_item_t));
+    if (!s_q) { ESP_LOGE(TAG, "audio queue alloc failed"); return ESP_ERR_NO_MEM; }
 
     i2s_chan_config_t ch = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     ch.dma_desc_num = 4; ch.dma_frame_num = 240;          /* 4×240 ≈ 60ms 環形深度 */
@@ -152,7 +163,8 @@ esp_err_t hal_audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &std));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));            /* 常開,永不 disable */
 
-    es8311_min_init(board_i2c_bus(), AUDIO_SAMPLE_RATE * 256, AUDIO_SAMPLE_RATE);
+    esp_err_t codec = es8311_min_init(board_i2c_bus(), AUDIO_SAMPLE_RATE * 256, AUDIO_SAMPLE_RATE);
+    if (codec != ESP_OK) ESP_LOGE(TAG, "ES8311 bring-up not verified (%s); audio may be silent", esp_err_to_name(codec));
     es8311_min_set_volume(100);   /* v1.4:codec 固定 0dB —— 音量單一由軟體增益(apply_volume)
                     控制,修「codec+軟體雙重衰減 ≈ -24dB 近無聲」bug */
 

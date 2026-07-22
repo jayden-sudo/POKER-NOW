@@ -14,16 +14,30 @@ static const char *TAG = "hal_battery";
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
 static bool s_cali_ok, s_inited;
+static bool s_adc_ok;               /* ADC 初始化成功;失敗則回快取/0xFF 而非 panic 整機 */
 static uint8_t s_cache = 0xFF;      /* 最後一次成功換算的 pct(Wi-Fi 佔用 ADC2 時回它) */
 static int64_t s_next_us;
 
 static void ensure_init(void)
 {
     if (s_inited) return;
+    s_inited = true;   /* 提前設,初始化失敗也不反覆重試 */
+
+    gpio_config_t io = { .pin_bit_mask = 1ULL << CHARGE_DETECT_PIN, .mode = GPIO_MODE_INPUT };
+    gpio_config(&io);
+
+    /* 電量感測失效不應 brick 整台:檢查回傳而非 ESP_ERROR_CHECK(#7)。 */
     adc_oneshot_unit_init_cfg_t unit_cfg = { .unit_id = BAT_ADC_UNIT };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_cfg, &s_adc));
+    if (adc_oneshot_new_unit(&unit_cfg, &s_adc) != ESP_OK) {
+        ESP_LOGE(TAG, "ADC unit init failed; battery unavailable");
+        return;
+    }
     adc_oneshot_chan_cfg_t ch_cfg = { .atten = BAT_ADC_ATTEN, .bitwidth = ADC_BITWIDTH_12 };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, BAT_ADC_CHANNEL, &ch_cfg));
+    if (adc_oneshot_config_channel(s_adc, BAT_ADC_CHANNEL, &ch_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "ADC channel config failed; battery unavailable");
+        return;
+    }
+    s_adc_ok = true;
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id = BAT_ADC_UNIT, .chan = BAT_ADC_CHANNEL,
@@ -31,22 +45,20 @@ static void ensure_init(void)
     };
     s_cali_ok = (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali) == ESP_OK);
 #endif
-    gpio_config_t io = { .pin_bit_mask = 1ULL << CHARGE_DETECT_PIN, .mode = GPIO_MODE_INPUT };
-    gpio_config(&io);
-    s_inited = true;
     ESP_LOGI(TAG, "battery ADC2_CH6 ready (cali=%d)", (int)s_cali_ok);
 }
 
 static int try_read_bat_mv(void)            /* 成功回電池 mV,失敗回 -1(demo battery.c 邏輯) */
 {
+    if (!s_adc_ok) return -1;
     long acc = 0; int ok = 0, r = 0;
     for (int i = 0; i < 16; i++) {
         if (adc_oneshot_read(s_adc, BAT_ADC_CHANNEL, &r) == ESP_OK) { acc += r; ok++; }
     }
     if (ok == 0) return -1;                 /* Wi-Fi 佔用:ESP_ERR_TIMEOUT,非亂數 */
     int raw = (int)(acc / ok), mv;
-    if (s_cali_ok) adc_cali_raw_to_voltage(s_cali, raw, &mv);
-    else mv = raw * 3100 / 4095;            /* 12dB 近似(demo 同款兜底) */
+    if (!(s_cali_ok && adc_cali_raw_to_voltage(s_cali, raw, &mv) == ESP_OK))
+        mv = raw * 3100 / 4095;             /* 校準缺席或換算失敗 → 線性近似(#5) */
     return (int)(mv * BAT_DIVIDER);         /* float 乘積顯式轉 int(zuowei §16.1-4) */
 }
 

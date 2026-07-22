@@ -318,8 +318,8 @@ eval7(cards[7]) -> best:
 3. **恢復入口**:`on_link(RESYNCED)`(快照套用)或 ACCEPT_BACK 或排座重跑完成 →
    呼叫 `screen_from_state()`(§4.5)直接落點,不走線性流程。
 4. 送出命令的畫面收到 `REJECT/STALE` → 自環(留原畫面顯示原因,§3.2)。
-5. **系統選單**(§5.6):除 AMOUNT_PICK/BLINDS(它們的 LONG_OK=返回)外,
-   任何畫面 LONG_OK = 開啟系統選單。
+5. **系統選單**(§5):`UI_MENU` 於**任何畫面**皆開啟系統選單(全域最先處理)。
+   `UI_BACK` 為情境化返回:BLINDS=回上一欄、AMOUNT_PICK=取消回 MY_TURN、其餘畫面=開系統選單(逃生)。
 
 ### 4.2 主流程
 
@@ -376,30 +376,38 @@ RESULT 不用通用結構,改為**與序列齊播同步的分頁播報**:
 
 `on_link(RESYNCED)` 一律強制呼叫本表;這也是附錄 A 完備性的交叉驗證基準。
 
-## 5. 2 按鍵互動模型(全產品統一心智)
+## 5. 抽象輸入意圖互動模型(全產品統一心智)
 
-**唯一心智:NEXT 換、OK 定、LONG_OK 返回/選單。**
+**唯一心智:UP/DOWN 換、OK 定、BACK 返回、MENU 選單。**
 
-1. **選單**:NEXT 短按循環(到尾繞回),OK 短按確定;選項 ≤5/畫面;**忽略 REPEAT**。
-2. **數值輸入**(籌碼、SB/BB/CAP、加注額):NEXT +1(REPEAT 連發,2s 後 ×10 步進);
-   到上限繞回下限;OK 確認;LONG_OK 返回/取消。初值 = 情境預設
+共用碼只認識 5 種與硬體無關的抽象意圖 `UI_OK / UI_UP / UI_DOWN / UI_BACK / UI_MENU`;
+各裝置 `hal_input.c` 自行把物理按鍵(2 鍵點/雙/長、3 鍵長按、全鍵盤)合成這 5 種意圖,
+並以 `hal_input_hint()` 回報每種意圖在本機的觸發標籤(顯示於畫面提示列)。
+> 歷史:v2.4 之前本節以單一「LONG_OK」手勢兼任「選單/返回」;之後拆為獨立的
+> `UI_MENU`(永遠開系統選單)與 `UI_BACK`(情境化返回),不再綁定「長按 OK」這一特定物理手勢。
+> 各裝置目前實際手勢見各 `devices/<board>/README.md` 與 `hal_input.c`(例:zuowei 長按中鍵=關機,
+> 選單在左鍵長按;StickS3 選單在長按 OK)。
+
+1. **選單/清單**:UI_UP/UI_DOWN 移動高亮(到尾繞回),UI_OK 確定;選項 ≤5/畫面;**忽略 REPEAT**。
+2. **數值輸入**(籌碼、SB/BB/CAP、加注額):UI_UP +1、UI_DOWN −1(REPEAT 連發,2s 後 ×10 步進);
+   到上限繞回下限;UI_OK 確認;UI_BACK 返回/取消。初值 = 情境預設
    (籌碼 15、raise=min_raise_to)。範圍:籌碼 1–9999(CHIPS_MAX)。
    增強:incdec(IMU/方向鍵)=±1;鍵盤 get_number 直輸。
 3. **行動選單**(固定順序):`Check/Call → Bet/Raise → Fold → All-in`
    (不合法項不出現);游標**預設落在 Check/Call**;Fold 紅色。
-4. **破壞性二確認**:選 Fold 或 All-in 按 OK 後,title 變紅
-   `"FOLD? OK=YES NEXT=NO"`(All-in 同理)—— OK 確認送出,NEXT 取消回選單。
+4. **破壞性二確認**:選 Fold 或 All-in 按 UI_OK 後,title 變紅
+   `"FOLD? OK=YES / BACK=NO"`(All-in 同理)—— UI_OK 確認送出,UI_BACK 取消回選單。
    Check/Call/Bet/Raise 單擊即行(高頻低險)。
-5. **防誤觸**:MY_TURN 進場 500ms 忽略按鍵;選單忽略 REPEAT(§5.1)。
-6. **系統選單**(LONG_OK,除 AMOUNT_PICK/BLINDS 外全畫面可達):
+5. **防誤觸**:MY_TURN 進場 150ms 忽略按鍵;選單忽略 REPEAT(§5.1)。
+6. **系統選單**(UI_MENU,全畫面可達):
    `[RESUME] [BUY-IN](僅淘汰者,局間) [VOLUME] [BRIGHTNESS] [LEAVE TABLE]`。
-   VOLUME:NEXT 循環 40/70/100%(即試播 V_BEEP);
-   BRIGHTNESS:NEXT 循環 30/60/100%(即時生效);
-   LEAVE TABLE:二確認 `"Leave? OK=YES NEXT=NO"` → `game_submit_leave()` → SCANNING。
-   **任何單一手勢都不得直接離桌**(v1.0 的 LOBBY/PAUSED LONG_OK=離桌廢除)。
+   VOLUME:UI_OK 循環 10/40/70/100%(即試播 V_BEEP);
+   BRIGHTNESS:UI_OK 循環 30/60/100%(即時生效);
+   LEAVE TABLE:二確認 `"Leave? OK=YES / BACK=NO"` → `game_submit_leave()` → SCANNING。
+   **任何單一手勢都不得直接離桌**(v1.0 的 LOBBY/PAUSED 直接離桌廢除)。
    **持久化**:音量與亮度變更即寫 NVS(namespace `poker`,key `vol`/`bri`),
-   開機載入(預設 70%/80%);選單邏輯在共用碼,四機自動獲得。
-7. BLINDS 多欄:OK=下一欄(末欄=送出),NEXT=+1,LONG_OK=上一欄(**首欄 LONG_OK=V_BEEP 無操作**)。
+   開機載入(板級預設,見各 board_config.h);選單邏輯在共用碼,四機自動獲得。
+7. BLINDS 多欄:UI_OK=下一欄(末欄=送出),UI_UP/UI_DOWN=±1,UI_BACK=上一欄(**首欄 UI_BACK=開系統選單**)。
 8. DEALER_CALL 逃生口 = 臨時 Master 自己按 OK 認領(協定 §8.3.3 的「產品層選項」即此;
    15s 超時重播由協定 E_REMIND 驅動,無需第三鍵)。
 
@@ -465,7 +473,7 @@ runout 相鄰 E_STREET 的 play_at 間隔 ≥3500ms(§3.4);
 | Master 接管中 | 橫幅 "NEW DEALER TAKING OVER…";`E_HAND_ABORT` → ABORT 畫面 3s(V_HAND_ABORT + 顯示退注額)→ INTERMISSION |
 | 兩桌合併(TABLE_DISSOLVE) | "Merging tables…" 1s → SCANNING(自動重加入勝方桌) |
 | 局中有人離線 | WAIT_TURN 該座標記 `?`;15s 後 Master 代打(協定行為) |
-| 中途想加入 | PENDING_JOIN "Waiting for dealer approval" + V_WAIT_APPROVE;LONG_OK=系統選單(取消) |
+| 中途想加入 | PENDING_JOIN "Waiting for dealer approval" + V_WAIT_APPROVE;UI_MENU=系統選單(取消) |
 | 淘汰 | RESULT 後 → REBUY(局間)或 SPECTATE(局中);V_ELIMINATED 本機播一次 |
 | 電量 <15% | title 電池紅;<8% 本機 V_LOW_BATT(每 10 分鐘至多一次);若因此觸發協定低電豁免(Dealer≠Master),title_flags.bit2 亮 |
 | 座位被系統指派(E_SEAT_SET.auto=1) | 該裝置閃提示 "SEAT AUTO-ASSIGNED",玩家可線下協調後由莊家重跑排座 |
@@ -496,7 +504,7 @@ Cardputer(S3FN8 512KB,無 PSRAM)較 C3 寬鬆;兩台 PSRAM 機無壓力。
 |---|---|
 | 主迴圈 | UI 重繪 ≤10 fps;輸入→畫面反饋 <100ms;輸入→CMD 送出 <50ms |
 | 齊播精度 | 穩態 ±10ms(協定)+ 各機音訊路徑延遲校準(§2.3);**跨異型裝置實測錯位 <30ms**;C3 若實測不可達,明文降級並記錄 |
-| 音量 | 預設 70%;StickS3 電池供電鉗 ≤75(硬體);系統選單可調 40/70/100(NVS 持久化) |
+| 音量 | 預設板級(見 board_config.h);StickS3 電池供電鉗 ≤75(硬體);系統選單可調 10/40/70/100(NVS 持久化) |
 | 亮度 | 預設 80%;系統選單可調 30/60/100(NVS 持久化) |
 | 電量顯示 | 全部畫面標題列右側常駐(10s 刷新;0xFF→"USB") |
 | 啟動 | 上電 → SCANNING ≤3s |
@@ -525,7 +533,11 @@ Cardputer(S3FN8 512KB,無 PSRAM)較 C3 寬鬆;兩台 PSRAM 機無壓力。
 
 **總則(§4.1)適用於全表;此處只列各畫面特有遷移。凡未列出的事件:狀態照常更新、畫面不切。**
 
-| 畫面 | 進入條件 | OK | NEXT | LONG_OK | 特有離開遷移 |
+> 欄位為抽象意圖:`OK`=UI_OK、`UP/DOWN`=UI_UP/UI_DOWN、`BACK`=UI_BACK。
+> 另有全域 `UI_MENU`:於**任何**畫面直接開系統選單(不列於下表,因非畫面特有)。
+> 下表 BACK 欄標「系統選單」處,即該畫面 UI_BACK 的逃生語義 = 開系統選單。
+
+| 畫面 | 進入條件 | OK | UP/DOWN | BACK | 特有離開遷移 |
 |---|---|---|---|---|---|
 | BOOT | 上電 | – | – | – | HAL 就緒→SCANNING |
 | SCANNING | – | – | – | 系統選單(僅 VOLUME) | ACCEPT→LOBBY;PENDING→PENDING_JOIN;ACCEPT_BACK→§4.5;REJECT_FULL/VERSION→提示 2s 續掃 |
@@ -533,7 +545,7 @@ Cardputer(S3FN8 512KB,無 PSRAM)較 C3 寬鬆;兩台 PSRAM 機無壓力。
 | DEALER_CALL | E_DEALER_CALL | C_DEALER_CLAIM | – | 系統選單 | E_DEALER_SET→SEATING |
 | SEATING | E_SEAT_PROMPT | C_SEAT_CLAIM(我無座時) | – | (莊家)二確認後 C_CEREMONY_SKIP;(他人)系統選單 | E_SEATING_DONE→(我 chips==0 且未淘汰)CHIPS_SET;否則 WAIT |
 | CHIPS_SET | 見 SEATING 出口 / §4.5 | 確認→C_SET_CHIPS | +1/REPEAT | 系統選單 | ACK 後→WAIT;REJECT→自環 |
-| BLINDS | E_BLINDS_PROMPT(我=莊家) | 下一欄/末欄送出 | +1/REPEAT | 上一欄(首欄=V_BEEP) | E_TABLE_CONFIG→WAIT;REJECT→自環 |
+| BLINDS | E_BLINDS_PROMPT(我=莊家) | 下一欄/末欄送出 | ±1/REPEAT | 上一欄(首欄=系統選單) | E_TABLE_CONFIG→WAIT;REJECT→自環 |
 | WAIT | 他人操作中 | – | – | 系統選單 | E_HAND_START→HAND_DEALT;其餘事件按 §4.1/§4.5 |
 | HAND_DEALT | E_HAND_START | peek 底牌(3s) | – | 系統選單 | E_ACTION_REQ(我)→MY_TURN;(他)→WAIT_TURN;§4.1 總則(runout 直達 RESULT 亦覆蓋) |
 | MY_TURN | E_ACTION_REQ.seat=我 | 選定(Fold/All-in 進二確認) | 循環動作 | 系統選單 | Bet/Raise→AMOUNT_PICK;送出後→WAIT_TURN;REJECT→自環 |
@@ -547,7 +559,7 @@ Cardputer(S3FN8 512KB,無 PSRAM)較 C3 寬鬆;兩台 PSRAM 機無壓力。
 | REBUY | 局間且我淘汰 | 確認→C_SET_CHIPS | +1/REPEAT | 系統選單 | ACK→INTERMISSION(他人);E_HAND_START→SPECTATE(未買入) |
 | PENDING_JOIN | JOIN_ACK(PENDING) | – | – | 系統選單(取消→SCANNING) | E_JOIN_DECIDED(允)→SEATING;(否)→SCANNING |
 | PAUSED | E_GAME_PAUSE | – | – | 系統選單 | E_GAME_RESUME→§4.5 落點 |
-| SYSMENU | LONG_OK | 確認選項 | 循環 | 關閉選單 | RESUME→原畫面;LEAVE 二確認→SCANNING;BUY-IN→REBUY |
+| SYSMENU | UI_MENU(或他畫面 BACK 逃生) | 確認選項 | 循環 | 關閉選單 | RESUME→原畫面;LEAVE 二確認→SCANNING;BUY-IN→REBUY |
 
 矩陣完備性驗證基準:**每個 `pn_phase_t` × 本機角色(莊家/玩家/淘汰/待批)在 §4.5 表中
 都有落點,且本表每個畫面對 §4.1 總則事件都可達出口** —— 實作時以此雙向檢查。

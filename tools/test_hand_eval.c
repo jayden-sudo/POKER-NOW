@@ -1,9 +1,6 @@
 /*
- * test_hand_eval.c -- host 端單元測試(指南 §20.2)。
- * 編譯:
- *   cc -std=c11 -DPK_HOST_TEST -I components/poker_core/include \
- *      tools/test_hand_eval.c components/poker_core/src/hand_eval.c \
- *      components/poker_core/src/side_pot.c -o /tmp/he && /tmp/he
+ * test_hand_eval.c -- host 端單元測試向量(指南 §20.2)。
+ * 執行:tools/run_tests.sh(唯一權威入口,-Werror 建置,cwd 無關)。
  */
 #include "hand_eval.h"
 #include "side_pot.h"
@@ -134,6 +131,35 @@ static void test_hand_eval(void)
         hand_rank_t q  = ev("Ah Ad Ac As Kh 2d 3h");
         CHECK(hand_rank_cmp(&sf, &q) > 0, "straight flush beats quads");
     }
+
+    /* 19. 兩組三條 → 7 選 5 枚舉須取「高三條+對」的葫蘆(而非三條) */
+    r = ev("9h 9d 9c 5s 5d 5c Kh");
+    CHECK(r.cat == 6 && r.kick[0] == 7 && r.kick[1] == 3, "two trips -> full house 9over5 cat=%d k=%d,%d", r.cat, r.kick[0], r.kick[1]);
+
+    /* 20. 葫蘆互比:高三條者勝(KKK22 > QQQAA) */
+    {
+        hand_rank_t a = ev("Kh Kd Kc 2s 2d 3c 4h");
+        hand_rank_t b = ev("Qh Qd Qc Ac Ad 3c 4h");
+        CHECK(a.cat == 6 && b.cat == 6 && hand_rank_cmp(&a, &b) > 0, "KKK22 beats QQQAA");
+    }
+
+    /* 21. 公共牌四條,踢腳取手牌最大(quad A + K) */
+    r = ev("Ah Ad Ac As 2c Kd 3h");
+    CHECK(r.cat == 7 && r.kick[0] == 12 && r.kick[1] == 11, "quads on board + K kicker cat=%d k=%d,%d", r.cat, r.kick[0], r.kick[1]);
+
+    /* 22. 同花擊敗順子(cat 5 > 4) */
+    {
+        hand_rank_t fl = ev("2h 5h 9h Jh Kh 3c 4d");
+        hand_rank_t st = ev("5h 6d 7c 8s 9h 2c 3d");
+        CHECK(fl.cat == 5 && st.cat == 4 && hand_rank_cmp(&fl, &st) > 0, "flush beats straight");
+    }
+
+    /* 23. 兩順子取高者(9 高 > 8 高),且皆非同花 */
+    {
+        hand_rank_t hi = ev("5h 6d 7c 8s 9h 2c 3d");   /* 9 高順 */
+        hand_rank_t lo = ev("4h 5d 6c 7s 8h 2c 3d");   /* 8 高順 */
+        CHECK(hand_rank_cmp(&hi, &lo) > 0 && hi.kick[0] == 7 && lo.kick[0] == 6, "9-high straight beats 8-high");
+    }
 }
 
 /* ---- side_pot helpers ---- */
@@ -240,6 +266,21 @@ static void test_side_pot(void)
         uint16_t tot = side_pot_settle(p, board, 1, win, ww);
         CHECK(tot == 100, "S7 total=%d exp 100", tot);
         CHECK(win[2] == 34 && win[4] == 33 && win[6] == 33, "S7 odd remainder to button-left (%d/%d/%d)", win[2], win[4], win[6]);
+    }
+
+    /* S8. 守恆不變量:多路 all-in + 棄牌者過投,Σwin 必等於 Σbet_hand(不漏不憑空造錢) */
+    {
+        sp_player_t p[10]; memset(p, 0, sizeof(p));
+        uint8_t board[5] = { pc("2s"), pc("7d"), pc("9h"), pc("Tc"), pc("Js") };
+        p[0] = mk(false, 30,  "Ah", "Ad");   /* all-in 30 */
+        p[1] = mk(false, 60,  "Kh", "Kd");   /* all-in 60 */
+        p[2] = mk(true,  45,  "2c", "3d");   /* 棄牌但投 45(死錢/部分退超額) */
+        p[3] = mk(false, 100, "Qh", "Qd");   /* 100 */
+        uint16_t tot = side_pot_settle(p, board, 0, win, ww);
+        uint32_t sum = 0;
+        for (int i = 0; i < 10; i++) sum += win[i];
+        CHECK(tot == 235, "S8 total=%d exp 235 (sum of all bet_hand)", tot);
+        CHECK(sum == tot, "S8 conservation: Sum(win)=%u == total=%u", (unsigned)sum, (unsigned)tot);
     }
 }
 

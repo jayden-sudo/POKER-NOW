@@ -16,7 +16,7 @@
 static const char *TAG = "hal_audio";
 #define FRAME 320                              /* 20ms @16k */
 
-typedef struct { voice_id_t id; uint32_t at_ms; bool sched; } aq_item_t;
+typedef struct { voice_id_t id; uint32_t at_ms; bool sched; bool stop; } aq_item_t;
 static QueueHandle_t s_q;
 static aq_item_t s_pend[4]; static int s_npend;      /* 排程單,按 at_ms 升序 */
 static aq_item_t s_imm[8];  static int s_nimm;       /* 即播 FIFO */
@@ -26,9 +26,10 @@ static uint32_t s_head_ms;                           /* 下一幀首樣本的「
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static bool time_ge(uint32_t a, uint32_t b) { return (int32_t)(a - b) >= 0; }
 
-void hal_audio_play(voice_id_t id)                { aq_item_t i = { id, 0, false }; if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { id, t, true };  if (s_q) xQueueSend(s_q, &i, 0); }
-void hal_audio_stop(void) { if (s_cur) { voice_close(s_cur); s_cur = NULL; } s_nimm = 0; s_npend = 0; }
+void hal_audio_play(voice_id_t id)                { aq_item_t i = { .id = id, .sched = false }; if (s_q) xQueueSend(s_q, &i, 0); }
+void hal_audio_play_at(voice_id_t id, uint32_t t) { aq_item_t i = { .id = id, .at_ms = t, .sched = true }; if (s_q) xQueueSend(s_q, &i, 0); }
+/* stop 經佇列傳遞,清理只在 audio_task 內做,消除對 s_cur/計數器的資料競爭(UAF/double-free,#1)。 */
+void hal_audio_stop(void) { aq_item_t i = { .stop = true }; if (s_q) xQueueSend(s_q, &i, 0); }
 uint16_t hal_audio_path_latency_ms(void) { return AUDIO_PATH_LATENCY_MS; }
 void hal_audio_set_volume(uint8_t pct)
 {
@@ -40,6 +41,11 @@ static void drain_queue(void)
 {
     aq_item_t it;
     while (xQueueReceive(s_q, &it, 0) == pdTRUE) {
+        if (it.stop) {   /* 在 audio_task 內清理,無競爭(#1) */
+            if (s_cur) { voice_close(s_cur); s_cur = NULL; }
+            s_npend = 0; s_nimm = 0;
+            continue;
+        }
         if (it.sched) {
             if (s_npend < 4) {
                 /* 依 at_ms 升序插入 */
@@ -120,6 +126,7 @@ static esp_err_t voice_partition_load(void)   /* 與 StickS3 逐行相同(subtyp
 esp_err_t hal_audio_init(void)
 {
     s_q = xQueueCreate(16, sizeof(aq_item_t));
+    if (!s_q) { ESP_LOGE(TAG, "audio queue alloc failed"); return ESP_ERR_NO_MEM; }
 
     vb6824_init(VB_PIN_TX, VB_PIN_RX);        /* UART1@2Mbps + 內部兩 task(prio 9) */
     /* 不註冊 voice_command_cb、不 enable_input:撲克不用喚醒詞與麥克風 */

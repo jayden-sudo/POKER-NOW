@@ -50,6 +50,10 @@
 #define PK_EVT_LOG_MASTER       64
 #define PK_EVT_LOG_MEMBER       32
 
+/* ---- 指南新增:session 內部時序(§8 加入/接管的實作細節,非協定 §13 表) ---- */
+#define PN_T_PEND_NOTIFY_MS      10000   /* JOIN_PENDING 候選者重複通知抑制窗口 */
+#define PN_T_PEND_MASTER_LOST_MS 10000   /* ROLE_PENDING 期間心跳斷多久判 Master 失聯回掃描 */
+
 /* ---- 指南 §3.1 新增常數 ---- */
 #define PK_CHIPS_MAX        9999          /* 產品 §3.2 */
 #define PK_CHIPS_DEFAULT    15

@@ -133,6 +133,7 @@ esp_err_t tca8418_init(i2c_master_bus_handle_t bus, gpio_num_t int_pin, tca8418_
 
     /* 4) INT 腳 + 負緣中斷(晶片側已有 3.3k 硬上拉) */
     s_sem = xSemaphoreCreateBinary();
+    if (!s_sem) { ESP_LOGE(TAG, "sem alloc failed"); return ESP_ERR_NO_MEM; }   /* 否則 ISR give / task take NULL 會崩(#11) */
     gpio_config_t io = {
         .pin_bit_mask = BIT64(int_pin),
         .mode = GPIO_MODE_INPUT,

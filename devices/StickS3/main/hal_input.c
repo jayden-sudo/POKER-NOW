@@ -1,9 +1,10 @@
 /* hal_input.c -- StickS3 2 鍵方案(v2.1:按鍵→抽象意圖映射在裝置端)。
  * 物理:KEY1(G11)=OK 鍵,KEY2(G12)=NEXT 鍵(上拉低有效)。左側電源鍵不接 MCU。
  * 以「點擊 / 雙擊 / 長按」組合出 5 種意圖:
- *   OK   點擊 → UI_OK        OK   雙擊 → UI_MENU
+ *   OK   點擊 → UI_OK        OK   長按 → UI_MENU(系統選單)
  *   NEXT 點擊 → UI_UP      NEXT 雙擊 → UI_DOWN      NEXT 長按 → UI_BACK
- * (OK 長按保留未用)。手勢合成(點/雙/長)本地完成,不在 common。 */
+ * OK 鍵無雙擊手勢 → 放開即觸發單擊(零等待);NEXT 鍵才需等 DOUBLE_MS 辨別單/雙。
+ * 手勢合成(點/雙/長)本地完成,不在 common。 */
 #include "hal/hal_input.h"
 #include "board_config.h"
 #include "driver/gpio.h"
@@ -25,9 +26,10 @@ typedef struct {
 } keyst_t;
 
 /* 手勢 → 意圖:idx0=OK 鍵,idx1=NEXT 鍵;-1=不觸發 */
-static const int MAP_SINGLE[2] = { UI_OK,   UI_UP };
-static const int MAP_DOUBLE[2] = { UI_MENU, UI_DOWN };
-static const int MAP_LONG[2]   = { -1,      UI_BACK };
+static const int  MAP_SINGLE[2] = { UI_OK,   UI_UP };
+static const int  MAP_DOUBLE[2] = { -1,      UI_DOWN };   /* OK 不再用雙擊 */
+static const int  MAP_LONG[2]   = { UI_MENU, UI_BACK };   /* OK 長按 = 系統選單 */
+static const bool HAS_DOUBLE[2] = { false,   true };      /* OK 無雙擊 → 放開即單擊,零延遲 */
 
 static void emit(int ev) { if (ev >= 0 && s_cb) s_cb((hal_ui_event_t)ev); }
 
@@ -49,7 +51,9 @@ static void btn_task(void *a)
                 } else {                            /* 放開沿 */
                     k->down = false;
                     if (!k->long_fired) {
-                        if (k->click_pending && (now - k->release_us) < DOUBLE_MS * 1000) {
+                        if (!HAS_DOUBLE[i]) {
+                            emit(MAP_SINGLE[i]);                             /* 無雙擊手勢:放開即單擊,零延遲 */
+                        } else if (k->click_pending && (now - k->release_us) < DOUBLE_MS * 1000) {
                             emit(MAP_DOUBLE[i]); k->click_pending = false;   /* 雙擊 */
                         } else {
                             k->click_pending = true; k->release_us = now;   /* 待定單擊 */
@@ -90,7 +94,7 @@ const char *hal_input_hint(hal_ui_event_t ev)
     case UI_UP: return "NEXT";
     case UI_DOWN: return "NEXT x2";
     case UI_BACK: return "hold NEXT";
-    case UI_MENU: return "OK x2";
+    case UI_MENU: return "hold OK";
     default:      return "?";
     }
 }
